@@ -4,13 +4,23 @@ import xml.etree.ElementTree as ET
 from datetime import datetime
 from tkinter import *
 from tkinter import messagebox
-
 import requests
 from bs4 import BeautifulSoup as soup
+import pkgutil
+
 
 root = Tk()
 root.title("Soup.io content downloader")
 root.resizable(0, 0)
+
+
+def resource_path(relative_path):
+    if hasattr(sys, '_MEIPASS'):
+        return os.path.join(sys._MEIPASS, relative_path)
+    return os.path.join(os.path.abspath("."), relative_path)
+
+
+root.iconbitmap(resource_path("icon.ico"))
 
 root.minsize(400, 120)
 root.maxsize(400, 120)
