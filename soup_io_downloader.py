@@ -65,7 +65,7 @@ class SoupIODownloader:
     def __get_next_page_url(self):
         return self.base_url + self._get_website().find(name='a', attrs={'class': 'more keephash'}).get('href') or None
 
-    def set_new_url(self):
+    def _set_new_url(self):
         setattr(self, 'url', self.__get_next_page_url())
 
     def download(self):
@@ -73,5 +73,5 @@ class SoupIODownloader:
         while self.url:
             self.logger.info('downloading images from {} page'.format(self.url))
             self._download_images_from_one_page()
-            self.set_new_url()
+            self._set_new_url()
         self.logger.info('all images were downloaded')
