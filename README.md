@@ -1,3 +1,3 @@
-Simple program to download images form soup.io. You can also update already existing backup. 
+Class `SoupIODownloader` that provides functionality to download images from specified soup. 
 
-Note: It is normal that window freezes while downloading images, do not close application.
+To run it, simply call `download()` method on class instance, with url as method parameter.
