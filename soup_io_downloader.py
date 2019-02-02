@@ -13,8 +13,8 @@ class SoupIODownloader:
 
     def __setup_logger(self):
         logging.basicConfig(level=logging.INFO,
-                            format='%(asctime)s %(name)-12s %(levelname)-8s %(message)s',
-                            datefmt='%m-%d-%y %H:%M',
+                            format='%(asctime)s.%(msecs)03d %(levelname)-5s %(message)s',
+                            datefmt='%d-%m-%Y %H-%M-%S',
                             filename='soup_io_downloader.log',
                             filemode='w')
 
@@ -33,15 +33,22 @@ class SoupIODownloader:
         return f.group(0)
 
     def __create_filename(self, url):
-        date_format = '%d-%m-%Y %H-%M-%S-%f'
         file_extension = self.__get_file_extension(url)
         return os.path.join(self.__prepare_dir_absolute_path(), '{}.{}'.format(
-            datetime.now().strftime(date_format),
-            file_extension
+            datetime.now().strftime('%d-%m-%Y %H-%M-%S-%f'), file_extension
         ))
 
     def _get_website(self):
-        return BeautifulSoup(requests.get(self.url).content, 'html.parser')
+        try:
+            website = requests.get(self.url, timeout=10)
+        except requests.exceptions.Timeout as t_error:
+            self.logger.error('TimeoutError while fetching website \n traceback: {}'.format(t_error))
+            pass
+        except requests.exceptions.ConnectionError as conn_error:
+            self.logger.error('ConnectionError while fetching website \n traceback: {}'.format(conn_error))
+            pass
+        else:
+            return BeautifulSoup(website.content, 'html.parser')
 
     def _gather_links_from_page(self):
         media_links = self._get_website().findAll(name='div', attrs={'class': 'content'})
@@ -50,17 +57,25 @@ class SoupIODownloader:
 
     def _download_images_from_one_page(self):
         for url in self._gather_links_from_page():
-            response = self._save_content(url)
+            response = self._get_response(url)
             file_name = self.__create_filename(url)
+            self._save_file(file_name, response)
+
+    def _get_response(self, url):
+        try:
+            return requests.get(url, timeout=10)
+        except requests.exceptions.Timeout as t_error:
+            self.logger.error('TimeoutError while fetching {} \n traceback: {}'.format(url, t_error))
+            pass
+        except requests.exceptions.ConnectionError as conn_error:
+            self.logger.error('ConnectionError while fetching {} \n traceback: {}'.format(url, conn_error))
+            pass
+
+    def _save_file(self, file_name, response):
+        if response:
             with open(file_name, 'wb') as f:
                 self.logger.info('saving {}'.format(file_name))
                 f.write(response.content)
-
-    def _save_content(self, url):
-        try:
-            return requests.get(url)
-        except TimeoutError:
-            self.logger.error('error while fetching {}'.format(url))
 
     def __get_next_page_url(self):
         return self.base_url + self._get_website().find(name='a', attrs={'class': 'more keephash'}).get('href') or None
@@ -71,7 +86,8 @@ class SoupIODownloader:
     def download(self):
         self.__create_dir()
         while self.url:
-            self.logger.info('downloading images from {} page'.format(self.url))
+            self.logger.info('downloading images from {}'.format(self.url))
             self._download_images_from_one_page()
             self._set_new_url()
         self.logger.info('all images were downloaded')
+        self.logger.shutdown()
