@@ -1,15 +1,47 @@
-import os, requests, re, logging
+import argparse
+import logging
+import os
+import re
+import requests
 from bs4 import BeautifulSoup
 from datetime import datetime
+from tenacity import retry, wait_fixed, stop_after_attempt
 
 
-class SoupIODownloader:
+def request_exceptions(f):
+    def wrapper(self, *args, **kwargs):
+        try:
+            return f(self, *args, **kwargs)
+        except requests.exceptions.Timeout as t_error:
+            self.logger.error('TimeoutError while fetching website \n traceback: {}'.format(t_error))
+        except requests.exceptions.ConnectionError as conn_error:
+            self.logger.error('ConnectionError while fetching website \n traceback: {}'.format(conn_error))
+    return wrapper
+
+def regex_exceptions(f):
+    def wrapper(*args, **kwargs):
+        try:
+            return f(*args, **kwargs)
+        except IndexError:
+            return 'Wrong url provided'
+    return wrapper
+
+def https_wrapper(f):
+    def wrapper(*args, **kwargs):
+        url_ = f(*args, **kwargs)
+        if 'http' not in url_:
+            return f'https://{url_}'
+        return url_
+    return wrapper
+
+
+class SoupDownloader:
     def __init__(self, url):
-        self.url = url
-        self.base_url = url
+        self.url = self._get_url(url)
+        self.base_url = self._get_base_url(url)
+        self.website_content = None
         self.__setup_logger()
-        self.logger = logging.getLogger('soup_io_downloader')
-        self.logger.info('creating an instance of SoupIODownloader')
+        self.logger = logging.getLogger('soup_downloader')
 
     def __setup_logger(self):
         logging.basicConfig(level=logging.INFO,
@@ -18,19 +50,64 @@ class SoupIODownloader:
                             filename='soup_io_downloader.log',
                             filemode='w')
 
+    @https_wrapper
+    def _get_url(self, url):
+        return url
+
+    @regex_exceptions
+    @https_wrapper
+    def _get_base_url(self, given_url):
+        re_url = re.match('(?P<url>(http(s|)://|)\w+.soup.io)', given_url)
+        url = re_url.group('url')
+        return url
+
     def __prepare_dir_absolute_path(self):
-        dir_name = self.url.split('.')[0].split('/')[2]
-        return os.getcwd() + '\\' + dir_name + ' soup'
+        name = re.match('^((http|https)://)(?P<name>\w+).soup.io', self.base_url)
+        return os.path.join(os.path.dirname(__file__), f'{name.group("name")} soup')
 
     def __create_dir(self):
         dir_name = self.__prepare_dir_absolute_path()
         if not os.path.exists(dir_name):
-            self.logger.info('created \'{}\' directory'.format(dir_name))
             os.makedirs(dir_name)
+            self.logger.info(f'created \'{dir_name}\' directory')
 
     def __get_file_extension(self, url):
-        f = re.search('\w+', os.path.splitext(url)[1])
-        return f.group(0)
+        ext = re.search('\w+', os.path.splitext(url)[1])
+        return ext.group(0)
+
+    @request_exceptions
+    @retry(stop=stop_after_attempt(10), wait=wait_fixed(30))
+    def _get_website(self):
+        website = requests.get(self.url, timeout=10)
+        return BeautifulSoup(website.content, 'html.parser')
+
+    def __get_html_tags_from_page(self):
+        """Returns extracted 'content' html tags from page"""
+        return self.website_content.findAll(name='div', attrs={'class': 'content'})
+
+    def __extract_media_tags(self):
+        """Returns extracted img/video tag from content tag"""
+        return [media_link.find('video') or
+                media_link.find(name='a', attrs={'class': 'lightbox'})
+                or media_link.find('img')
+                for media_link in self.__get_html_tags_from_page()]
+
+    def __extract_urls_to_media(self):
+        """Returns extracted url from img/video tag"""
+        return [
+            media_link_raw.get('src') or
+            media_link_raw.get('href')
+            for media_link_raw in self.__extract_media_tags()]
+
+    @staticmethod
+    def __validate_media_link(url):
+        """Validates if url leads to file, i.e. has extension"""
+        if os.path.splitext(url)[1]:
+            return url
+
+    def _gather_links_from_page(self):
+        media_links = self.__extract_urls_to_media()
+        return [link for link in [self.__validate_media_link(link) for link in media_links] if link is not None]
 
     def __create_filename(self, url):
         file_extension = self.__get_file_extension(url)
@@ -38,56 +115,53 @@ class SoupIODownloader:
             datetime.now().strftime('%d-%m-%Y %H-%M-%S-%f'), file_extension
         ))
 
-    def _get_website(self):
-        try:
-            website = requests.get(self.url, timeout=10)
-        except requests.exceptions.Timeout as t_error:
-            self.logger.error('TimeoutError while fetching website \n traceback: {}'.format(t_error))
-            pass
-        except requests.exceptions.ConnectionError as conn_error:
-            self.logger.error('ConnectionError while fetching website \n traceback: {}'.format(conn_error))
-            pass
-        else:
-            return BeautifulSoup(website.content, 'html.parser')
+    @request_exceptions
+    @retry(stop=stop_after_attempt(10), wait=wait_fixed(30))
+    def _get_response(self, url):
+        return requests.get(url, timeout=10)
 
-    def _gather_links_from_page(self):
-        media_links = self._get_website().findAll(name='div', attrs={'class': 'content'})
-        media_links_raw = [media_link.find('video') or media_link.find('img') for media_link in media_links]
-        return [media_link_raw.get('src') for media_link_raw in media_links_raw]
+    def _save_file(self, response, file_name):
+        with open(file_name, 'wb') as f:
+            self.logger.info(f'saving {file_name}')
+            f.write(response.content)
 
     def _download_images_from_one_page(self):
         for url in self._gather_links_from_page():
             response = self._get_response(url)
             file_name = self.__create_filename(url)
-            self._save_file(file_name, response)
+            if response:
+                self._save_file(response, file_name)
 
-    def _get_response(self, url):
-        try:
-            return requests.get(url, timeout=10)
-        except requests.exceptions.Timeout as t_error:
-            self.logger.error('TimeoutError while fetching {} \n traceback: {}'.format(url, t_error))
-            pass
-        except requests.exceptions.ConnectionError as conn_error:
-            self.logger.error('ConnectionError while fetching {} \n traceback: {}'.format(url, conn_error))
-            pass
-
-    def _save_file(self, file_name, response):
-        if response:
-            with open(file_name, 'wb') as f:
-                self.logger.info('saving {}'.format(file_name))
-                f.write(response.content)
+    def __strip_url(self, url):
+        base_url = re.search('(?:http(?:s|)://|)\w+.soup.io', url)
+        return base_url.group(0)
 
     def __get_next_page_url(self):
-        return self.base_url + self._get_website().find(name='a', attrs={'class': 'more keephash'}).get('href') or None
+        try:
+            return self.base_url + self.website_content.find(name='a',
+                                                             attrs={'class': 'more keephash'}).get('href')
+        except AttributeError:
+            pass
 
-    def _set_new_url(self):
-        setattr(self, 'url', self.__get_next_page_url())
+    def _set_var(self, var, func):
+        setattr(self, var, func)
 
     def download(self):
         self.__create_dir()
         while self.url:
+            self._set_var('website_content', self._get_website())
+            if not self.website_content:
+                self.logger.info(f'Couldn\'t fetch from {self.url}')
+                break
             self.logger.info('downloading images from {}'.format(self.url))
             self._download_images_from_one_page()
-            self._set_new_url()
+            self._set_var('url', self.__get_next_page_url())
         self.logger.info('all images were downloaded')
-        self.logger.shutdown()
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Download all media (images, gifs and mp4s) from given soup')
+    parser.add_argument('--url', help='Provide an url either to soup first page (to download from scratch), '
+                                      'or to some page in order to pick up where you\'ve finished last time')
+    options = parser.parse_args()
+    SoupDownloader(options.url).download()
