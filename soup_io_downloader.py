@@ -1,21 +1,21 @@
-import argparse
 import logging
 import os
 import re
 import requests
 from bs4 import BeautifulSoup
 from datetime import datetime
-from tenacity import retry, wait_fixed, stop_after_attempt
-
+from tenacity import retry, wait_fixed, stop_after_attempt, RetryError
 
 def request_exceptions(f):
     def wrapper(self, *args, **kwargs):
         try:
             return f(self, *args, **kwargs)
         except requests.exceptions.Timeout as t_error:
-            self.logger.error('TimeoutError while fetching website \n traceback: {}'.format(t_error))
+            self.logger.error(f'TimeoutError while fetching website \n traceback: {t_error}')
         except requests.exceptions.ConnectionError as conn_error:
-            self.logger.error('ConnectionError while fetching website \n traceback: {}'.format(conn_error))
+            self.logger.error(f'ConnectionError while fetching website \n traceback: {conn_error}')
+        except RetryError as retry_error:
+            self.logger.error(f'Number of retries exceeded \n traceback: {retry_error}')
     return wrapper
 
 def regex_exceptions(f):
@@ -97,7 +97,7 @@ class SoupDownloader:
         return [
             media_link_raw.get('src') or
             media_link_raw.get('href')
-            for media_link_raw in self.__extract_media_tags()]
+            for media_link_raw in self.__extract_media_tags() if media_link_raw]
 
     @staticmethod
     def __validate_media_link(url):
@@ -106,10 +106,12 @@ class SoupDownloader:
             return url
 
     def _gather_links_from_page(self):
-        media_links = self.__extract_urls_to_media()
-        return [link for link in [self.__validate_media_link(link) for link in media_links] if link is not None]
+        media_links = filter(None, self.__extract_urls_to_media())
+        return [self.__validate_media_link(link) for link in media_links]
 
     def __create_filename(self, url):
+        if not url:
+            return None
         file_extension = self.__get_file_extension(url)
         return os.path.join(self.__prepare_dir_absolute_path(), '{}.{}'.format(
             datetime.now().strftime('%d-%m-%Y %H-%M-%S-%f'), file_extension
@@ -129,17 +131,17 @@ class SoupDownloader:
         for url in self._gather_links_from_page():
             response = self._get_response(url)
             file_name = self.__create_filename(url)
-            if response:
+            if response and file_name:
                 self._save_file(response, file_name)
 
+    @regex_exceptions
     def __strip_url(self, url):
         base_url = re.search('(?:http(?:s|)://|)\w+.soup.io', url)
         return base_url.group(0)
 
     def __get_next_page_url(self):
         try:
-            return self.base_url + self.website_content.find(name='a',
-                                                             attrs={'class': 'more keephash'}).get('href')
+            return self.base_url + self.website_content.find(name='a', attrs={'class': 'more keephash'}).get('href')
         except AttributeError:
             pass
 
@@ -160,8 +162,12 @@ class SoupDownloader:
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Download all media (images, gifs and mp4s) from given soup')
-    parser.add_argument('--url', help='Provide an url either to soup first page (to download from scratch), '
-                                      'or to some page in order to pick up where you\'ve finished last time')
-    options = parser.parse_args()
-    SoupDownloader(options.url).download()
+    url = input('Provide url to soup in one of the following manners: \n '
+                '- http://YOUR_SOUP.soup.io \n'
+                '- http://YOUR_SOUP.soup.io \n'
+                '- YOUR_SOUP.soup.io \n\n'
+                'If you wish to resume from given point, check log file to retrieve last fetched page url '
+                '(it will look similar to https://YOUR_SOUP.soup.io/since/123456789?mode=own) \n'
+                'your url: ')
+    print('To track the progress of downloading, check log file')
+    SoupDownloader(url).download()
